@@ -1,5 +1,32 @@
+const fs = require("fs");
+const path = require("path");
+const https = require("https");
+
+function strcmp(a, b) {
+	if(a < b)
+		return -1;
+	else if(a > b)
+		return 1;
+	else
+		return 0;
+}
+
 export default class ModManager {
+	preload() {
+		const request = new XMLHttpRequest();
+		request.onload = () => {
+			// Error handling is Coming Soon(TM)
+			// Because this is very unreliable
+			// This doesn't account for malformed JSON or where the request's loading time might exceed the game's
+			this.modDatabase = JSON.parse(request.response);
+		};
+		request.open("GET", "https://raw.githubusercontent.com/CCDirectLink/CCModDB/master/npDatabase.json");
+		request.send();
+	}
 	prestart() {
+		const self = this;
+		const currentLoadedMods = window.activeMods.concat(window.inactiveMods);
+		const currentLoadedModNames = window.activeMods.concat(window.inactiveMods).map(mod => mod.name);
 
 		ig.module("game.feature.menu.gui.mods.mod-list").requires(
 			"impact.feature.gui.gui"
@@ -72,7 +99,7 @@ export default class ModManager {
 
 				_createList() {
 					this.mods.forEach(mod => {	
-						let newModEntry = new sc.ModListBox.Entry(mod.name, mod.description, mod.versionString, null, this);
+						let newModEntry = new sc.ModListBox.Entry(mod.name, mod.description, mod.version, null, this);
 						this.modEntries.push(newModEntry);
 						this.list.addButton(newModEntry, false);
 					});
@@ -209,7 +236,7 @@ export default class ModManager {
 					}
 					//*/
 				},
-				init(name, description, versionString, icon, modList) {
+				init(name, description, version, icon, modList) {
 					this.parent();
 					let buttonSquareSize = 14;
 					
@@ -227,7 +254,7 @@ export default class ModManager {
 					this.name.setPos(4, 0);
 					this.description.setPos(4, 14);
 
-					this.versionText = new sc.TextGui(versionString, {
+					this.versionText = new sc.TextGui(`v${version}`, {
 						font: sc.fontsystem.tinyFont
 					});
 
@@ -250,20 +277,82 @@ export default class ModManager {
 					this.addChildGui(this.description);
 					this.addChildGui(this.versionText);
 
+					// See if there's an update available
+					// Automatic update notifications Soon(TM)
+					let mod = currentLoadedMods.find(mod => name === mod.name);
+					let showDownloadButton = true;
+
+					// Lexical comparison might work because it's greatest to least
+					if(mod && mod.version >= version)
+						showDownloadButton = false;
+
 					//*
-					this.installRemoveButton = new sc.ButtonGui("\\i[mod-config]", buttonSquareSize-1, true, this.modEntryActionButtons);
+					this.installRemoveButton = new sc.ButtonGui(showDownloadButton ? "\\i[mod-download]" : "\\i[mod-delete]", buttonSquareSize-1, true, this.modEntryActionButtons);
 					this.installRemoveButton.setPos(2, 1);
 					this.installRemoveButton.setAlign(ig.GUI_ALIGN.X_RIGHT, ig.GUI_ALIGN.Y_BOTTOM);
+					// There's some weird resizing with setText... but oh well.
+					this.installRemoveButton.onButtonPress = function() {
+						this.setText("\\i[mod-refresh]");
 
-					this.checkForUpdatesButton = new sc.ButtonGui("\\i[mod-refresh]", buttonSquareSize-1, true, this.modEntryActionButtons);
+						// Remove existing mod if it even exists
+						if(!showDownloadButton && mod) {
+							const location = mod.baseDirectory;
+
+							if(location.endsWith(".ccmod/")) {
+								fs.rm(location);
+							} else {
+								fs.rmdir(location, {
+									recursive: true
+								});
+							}
+
+							// Dirty trick to "remove" the mod from view
+							mod = null;
+						} else {
+							let link = null;
+
+							// Find the ccmod download link, otherwise, it'll be handled Soon(TM).
+							for(const download of self.modDatabase[name].installation)
+								if(download.type === "ccmod")
+									link = download.url;
+
+							if(link !== null) {
+								// Terrible terrible regex
+								const filename = /.+\/(.+?\.ccmod)$/.exec(link)[1];
+								// Should probably add proper error handling Soon(TM)
+								fetch(link).then(res => res.arrayBuffer()).then(buffer => {
+									const location = path.join("assets", "mods", filename);
+
+									fs.writeFile(location, new Uint8Array(buffer), error => {
+										if(error)
+											console.error(error);
+										else
+											console.log("Successfully written file.");
+									});
+
+									// Dirty trick to "add" the mod to view
+									mod = {baseDirectory: location + "/"};
+								});
+							}
+						}
+
+						showDownloadButton = !showDownloadButton
+						this.setText(showDownloadButton ? "\\i[mod-download]" : "\\i[mod-delete]");
+					};
+
+					/*// "\\i[mod-refresh]"
+					this.checkForUpdatesButton = new sc.ButtonGui("", buttonSquareSize-1, true, this.modEntryActionButtons);
 					this.checkForUpdatesButton.setPos(this.installRemoveButton.hook.pos.x + this.installRemoveButton.hook.size.x + 1, 1);
 					this.checkForUpdatesButton.setAlign(ig.GUI_ALIGN.X_RIGHT, ig.GUI_ALIGN.Y_BOTTOM);
+					//this.checkForUpdatesButton.onButtonPress = () => console.log("do something?");
 
-					this.openModSettingsButton = new sc.ButtonGui("\\i[mod-download]", buttonSquareSize-1, true, this.modEntryActionButtonStart);
+					// "\\i[mod-config]"
+					this.openModSettingsButton = new sc.ButtonGui("", buttonSquareSize-1, true, this.modEntryActionButtonStart);
 					this.openModSettingsButton.setPos(this.checkForUpdatesButton.hook.pos.x + this.checkForUpdatesButton.hook.size.x + 1, 1);
 					this.openModSettingsButton.setAlign(ig.GUI_ALIGN.X_RIGHT, ig.GUI_ALIGN.Y_BOTTOM);
+					//this.openModSettingsButton.onButtonPress = () => console.log("do something?");*/
 
-					[this.installRemoveButton, this.checkForUpdatesButton, this.openModSettingsButton].forEach(button => {
+					[this.installRemoveButton, /*this.checkForUpdatesButton, this.openModSettingsButton*/].forEach(button => {
 						this.addChildGui(button);
 						this.modList.buttonGroup.addFocusGui(button);
 						button.focusGained = function() {
@@ -419,17 +508,12 @@ export default class ModManager {
 						this.hook.size.x = ig.system.width;
 						this.hook.size.y = ig.system.height;
 
-						this.modList = new sc.ModListBox([
-							{name: "CCModManager", description: "An integrated mod manager for CrossCode", versionString: "v0.0.1"},
-							{name: "CCInventorySearch", description: "Inventory search mod", versionString: "v1.0.0"},
-							{name: "CCFillerText", description: "Lorem ipsum something or other", versionString: "v0.0.1"},
-							{name: "CCModManager", description: "An integrated mod manager for CrossCode", versionString: "v0.0.1"},
-							{name: "CCModManager", description: "An integrated mod manager for CrossCode", versionString: "v0.0.1"},
-							{name: "CCModManager", description: "An integrated mod manager for CrossCode", versionString: "v0.0.1"},
-							{name: "CCModManager", description: "An integrated mod manager for CrossCode", versionString: "v0.0.1"},
-							{name: "CCModManager", description: "An integrated mod manager for CrossCode", versionString: "v0.0.1"},
-							{name: "CCModManager", description: "An integrated mod manager for CrossCode", versionString: "v0.0.1"}
-						]);
+						const modList = [];
+						for(const mod of Object.values(self.modDatabase)) {
+							const {name, description, version} = mod.metadata;
+							modList.push({name, description, version});
+						}
+						this.modList = new sc.ModListBox(modList);
 						this.addChildGui(this.modList);
 
 						this.doStateTransition("DEFAULT", true);
